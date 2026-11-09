@@ -255,6 +255,10 @@ RestWrite.prototype.findUsersWithAuthData = function(authData) {
     if (!authData[provider]) {
       return memo;
     }
+    // Skip providers without a validator to avoid unindexed collection scans.
+    if (!this.config.authDataManager.getValidatorForProvider(provider)) {
+      return memo;
+    }
     const queryKey = `authData.${provider}.id`;
     const query = {};
     query[queryKey] = authData[provider].id;
@@ -277,9 +281,7 @@ RestWrite.prototype.findUsersWithAuthData = function(authData) {
 
 RestWrite.prototype.handleAuthData = function(authData) {
   let results;
-  return this.handleAuthDataValidation(authData).then(() => {
-    return this.findUsersWithAuthData(authData);
-  }).then((r) => {
+  return this.findUsersWithAuthData(authData).then((r) => {
     results = r;
     if (results.length > 1) {
       // More than 1 user with the passed id's
@@ -307,16 +309,20 @@ RestWrite.prototype.handleAuthData = function(authData) {
             mutatedAuthData[provider] = providerData;
           }
         });
-
         this.response = {
           response: userResult,
           location: this.location()
         };
 
+        // If we didn't change the auth data, just keep going
+        if (Object.keys(mutatedAuthData).length === 0) {
+          return;
+        }
         // We have authData that is updated on login
         // that can happen when token are refreshed,
         // We should update the token and let the user in
-        if (Object.keys(mutatedAuthData).length > 0) {
+        // We should only check the mutated keys
+        return this.handleAuthDataValidation(mutatedAuthData).then(() => {
           // Assign the new authData in the response
           Object.keys(mutatedAuthData).forEach((provider) => {
             this.response.response.authData[provider] = mutatedAuthData[provider];
@@ -324,9 +330,7 @@ RestWrite.prototype.handleAuthData = function(authData) {
           // Run the DB update directly, as 'master'
           // Just update the authData part
           return this.config.database.update(this.className, {objectId: this.data.objectId}, {authData: mutatedAuthData}, {});
-        }
-        return;
-
+        });
       } else if (this.query && this.query.objectId) {
         // Trying to update auth data but users
         // are different
@@ -336,7 +340,7 @@ RestWrite.prototype.handleAuthData = function(authData) {
         }
       }
     }
-    return;
+    return this.handleAuthDataValidation(authData);
   });
 }
 
